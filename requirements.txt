@@ -1,2 +1,11 @@
-discord.py
-python-dotenv
+# Discord bot
+discord.py>=2.3.0
+
+# Para cargar variables de entorno desde .env
+python-dotenv>=1.0.0
+
+# Servidor web para mantener el bot activo 24/7
+Flask>=2.3.2
+
+# Extras opcionales que suelen ser útiles
+requests>=2.31.0
