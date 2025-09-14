@@ -1,16 +1,20 @@
 import discord
-from discord.ext import commands
-from datetime import datetime
+from discord.ext import commands, tasks
+from datetime import datetime, timedelta
 
-from config import TOKEN, COMMAND_PREFIX, CANAL_SERVICIO, ROL_SERVICIO
-from data_manager import cargar_servicios, guardar_servicios
+from config import TOKEN, COMMAND_PREFIX, CANAL_SERVICIO, ROL_SERVICIO, CANAL_TOP_DOMINGO
+from data_manager import cargar_servicios, guardar_servicios, agregar_historial
 
 # ---------------- BOT SETUP ----------------
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.members = True
-bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
+bot = commands.Bot(
+    command_prefix=COMMAND_PREFIX,
+    intents=intents,
+    case_insensitive=True  # Permite !Servicio, !SERVICIO, etc.
+)
 
 # ---------------- DATOS ----------------
 servicios = cargar_servicios()
@@ -19,6 +23,7 @@ servicios = cargar_servicios()
 @bot.event
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
+    top_semanal.start()  # Iniciar el loop del top semanal
 
 # ---------------- COMANDO ----------------
 @bot.command()
@@ -34,7 +39,7 @@ async def servicio(ctx):
     if not rol:
         return await ctx.send("⚠️ No encontré el rol **En Servicio**, créalo primero en tu servidor.")
 
-    if usuario_id not in servicios:
+    if usuario_id not in servicios or isinstance(servicios[usuario_id], list):
         # Guardar inicio
         servicios[usuario_id] = datetime.now().isoformat()
         guardar_servicios(servicios)
@@ -54,14 +59,15 @@ async def servicio(ctx):
         # Calcular duración
         inicio = datetime.fromisoformat(servicios.pop(usuario_id))
         fin = datetime.now()
-        guardar_servicios(servicios)
-
         duracion = fin - inicio
-        horas, resto = divmod(duracion.seconds, 3600)
-        minutos, segundos = divmod(resto, 60)
-        tiempo_str = f"{horas}h {minutos}m {segundos}s"
+        segundos_totales = int(duracion.total_seconds())
+        agregar_historial(servicios, usuario_id, segundos_totales)
 
         await miembro.remove_roles(rol)
+
+        horas, resto = divmod(segundos_totales, 3600)
+        minutos, segundos = divmod(resto, 60)
+        tiempo_str = f"{horas}h {minutos}m {segundos}s"
 
         embed = discord.Embed(
             title="✅ Fin de Servicio",
@@ -71,6 +77,66 @@ async def servicio(ctx):
         embed.set_footer(text="Sistema de Control SAPD")
         embed.timestamp = datetime.now()
         await ctx.send(embed=embed)
+
+# ---------------- LOOP TOP SEMANAL ----------------
+@tasks.loop(minutes=1)
+async def top_semanal():
+    now = datetime.now()
+    # Domingo a las 10:30 (ajusta hora/minuto a tu preferencia)
+    if now.weekday() == 6 and now.hour == 11 and now.minute == 2:
+        for guild in bot.guilds:
+            canal = bot.get_channel(CANAL_TOP_DOMINGO)
+            if not canal:
+                print(f"❌ Canal del top semanal no encontrado. ID usado: {CANAL_TOP_DOMINGO}")
+                continue
+            print(f"✅ Publicando Top Semanal en el canal: {canal}")
+
+            servicios_actuales = cargar_servicios()
+            totales = {}
+
+            # Roles a ignorar
+            roles_ignorar = ["Bot's", "Koya", "Pancake", "Control-SAPD", "ProBot ✨"]
+
+            for miembro in guild.members:
+                # Ignorar miembros con alguno de los roles
+                if any(discord.utils.get(miembro.roles, name=r) for r in roles_ignorar):
+                    continue
+
+                usuario_nombre = miembro.display_name
+                user_id = str(miembro.id)
+
+                if user_id in servicios_actuales:
+                    datos = servicios_actuales[user_id]
+                    if isinstance(datos, list):
+                        total_segundos = sum(datos)
+                    else:
+                        # Usuario actualmente en servicio
+                        inicio = datetime.fromisoformat(datos)
+                        total_segundos = int((datetime.now() - inicio).total_seconds())
+                else:
+                    total_segundos = 0  # Usuario nunca en servicio
+
+                totales[usuario_nombre] = total_segundos
+
+            # Ordenar todos los usuarios por tiempo total
+            top_usuarios = sorted(totales.items(), key=lambda x: x[1], reverse=True)
+
+            # Crear embed
+            embed = discord.Embed(
+                title="🏆 Top Semanal de Servicio SAPD",
+                description="Ranking de usuarios por tiempo total en servicio",
+                color=0x3498db,
+                timestamp=datetime.now()
+            )
+
+            for i, (usuario_nombre, segundos) in enumerate(top_usuarios, start=1):
+                horas, resto = divmod(segundos, 3600)
+                minutos, s = divmod(resto, 60)
+                tiempo_str = f"{int(horas)}h {int(minutos)}m {int(s)}s"
+                embed.add_field(name=f"{i}. {usuario_nombre}", value=tiempo_str, inline=False)
+
+            await canal.send(embed=embed)
+            print("✅ Top semanal publicado con éxito.")
 
 # ---------------- RUN BOT ----------------
 if __name__ == "__main__":
